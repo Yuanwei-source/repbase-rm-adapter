@@ -1,0 +1,44 @@
+# RepBase source data and generated libraries
+data/
+output/
+outputs/
+results/
+work/
+*.ref
+RepBase*.tar.gz
+repbase_*.rm.fa*
+
+# Conversion audit outputs (entry-level derived data)
+id_mapping.tsv
+duplicate_report.tsv
+unmapped_records.tsv
+base_normalization.tsv
+summary.json
+
+# Sequence-derived test data and RepeatMasker outputs
+test_genome.fa
+rm_test_out/
+
+# BLAST indices
+*.nhr
+*.nin
+*.nsq
+*.nog
+*.nsd
+*.nsi
+
+# Safety net: no sequence library or FASTA should ever be committed
+*.fa
+*.fasta
+*.fa.gz
+*.fasta.gz
+
+# Logs and Python caches
+*.log
+__pycache__/
+.pytest_cache/
+*.pyc
+
+# Local environments
+.venv/
+.env
