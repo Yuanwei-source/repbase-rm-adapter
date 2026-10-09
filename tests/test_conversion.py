@@ -8,8 +8,16 @@ check the conversion behaviour:
 * case-insensitive ``KW`` classification via the mapping table
 * ``Unknown`` records are retained, never force-guessed
 * same ID + same sequence -> de-duplicated; same ID + different sequence -> renamed
+* same ID + different sequence + different ``KW`` -> classified independently
+* same ID + same sequence + conflicting ``KW`` -> resolved deterministically
+  (concrete beats ``Unknown``, subclass beats bare class, else input order) and
+  every conflict is written to ``class_conflicts.tsv``
 * ``x/u/o`` base normalization
 * output FASTA ID uniqueness and record/class count consistency
+* malformed input (missing ``SQ``, empty sequence, declared-length mismatch,
+  illegal bases) and post-sanitization ID collisions abort instead of writing
+  a plausible-but-wrong library
+* cross-validation reports no-shared-names instead of dividing by zero
 
 Run with::
 
@@ -166,6 +174,142 @@ class TestConvert(unittest.TestCase):
         self.assertIn(">G1_dup2#LTR/Gypsy @Anopheles_gambiae", headers)
         self.assertIn(">UNK1#Unknown @Homo_sapiens", headers)
         self.assertEqual(seqs.get("NORM1"), "ACGTNTN")
+
+
+class TestInputValidation(unittest.TestCase):
+    """Malformed input must abort instead of producing a plausible library."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+
+    def _write(self, text, name="syn.ref"):
+        p = os.path.join(self.tmp, name)
+        with open(p, "w") as f:
+            f.write(text)
+        return p
+
+    def _convert(self, **kw):
+        return r2r.convert(self.tmp, MAPPING, os.path.join(self.tmp, "out.fa"),
+                           self.tmp, **kw)
+
+    def test_post_sanitization_collision_aborts(self):
+        # 'A@1' and 'A_1' both sanitize to the same FASTA ID.
+        self._write(make_ref([("A@1", "Gypsy", "X", "acgt"),
+                              ("A_1", "Gypsy", "X", "tttt")]))
+        with self.assertRaises(r2r.ConversionError):
+            self._convert()
+
+    def test_generated_dup_suffix_collision_aborts(self):
+        # ID 'A' with two distinct sequences emits 'A' and 'A_dup2', which
+        # collides with the natural entry 'A_dup2'.
+        self._write(make_ref([("A", "Gypsy", "X", "acgt"),
+                              ("A", "Gypsy", "X", "tttt"),
+                              ("A_dup2", "Gypsy", "X", "cccc")]))
+        with self.assertRaises(r2r.ConversionError):
+            self._convert()
+
+    def test_missing_sq_aborts(self):
+        self._write("ID   NOSQ\nKW   Gypsy\nOS   X\n//\n")
+        with self.assertRaises(r2r.ConversionError) as cm:
+            self._convert()
+        self.assertIn("NOSQ", str(cm.exception))
+
+    def test_empty_sequence_aborts(self):
+        self._write("ID   EMPTY\nKW   Gypsy\nOS   X\nSQ   Sequence 10 BP;\n//\n")
+        with self.assertRaises(r2r.ConversionError) as cm:
+            self._convert()
+        self.assertIn("EMPTY", str(cm.exception))
+
+    def test_declared_length_mismatch_aborts_by_default(self):
+        self._write("ID   SHORT\nKW   Gypsy\nOS   X\nSQ   Sequence 999 BP;\n     acgt\n//\n")
+        with self.assertRaises(r2r.ConversionError) as cm:
+            self._convert()
+        self.assertIn("SHORT", str(cm.exception))
+
+    def test_declared_length_mismatch_allowed_is_logged(self):
+        self._write("ID   SHORT\nKW   Gypsy\nOS   X\nSQ   Sequence 999 BP;\n     acgt\n//\n")
+        summary = self._convert(allow_length_mismatch=True)
+        self.assertEqual(len(summary["length_anomalies"]), 1)
+        self.assertEqual(summary["length_anomalies"][0][1], "SHORT")
+
+    def test_illegal_base_aborts(self):
+        self._write(make_ref([("BADB", "Gypsy", "X", "acgtz")]))
+        with self.assertRaises(r2r.ConversionError) as cm:
+            self._convert()
+        self.assertIn("'z'", str(cm.exception))
+
+    def test_illegal_character_is_never_dropped(self):
+        with self.assertRaises(r2r.ConversionError):
+            r2r.normalize_bases("ACGTQ")
+
+
+class TestPerSequenceGroupClassification(unittest.TestCase):
+    """Same ID + different sequence must be classified from its own KW."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+
+    def _run(self, records):
+        with open(os.path.join(self.tmp, "syn.ref"), "w") as f:
+            f.write(make_ref(records))
+        out_fa = os.path.join(self.tmp, "out.fa")
+        summary = r2r.convert(self.tmp, MAPPING, out_fa, self.tmp)
+        with open(out_fa) as f:
+            headers = [line.strip() for line in f if line.startswith(">")]
+        return summary, headers
+
+    def test_distinct_sequences_keep_their_own_classification(self):
+        summary, headers = self._run([
+            ("M1", "Gypsy", "X", "aaaa"),
+            ("M1", "Helitron; DNA transposon", "X", "tttt"),
+        ])
+        self.assertIn(">M1#LTR/Gypsy @X", headers)
+        self.assertIn(">M1_dup2#RC/Helitron @X", headers)
+        self.assertEqual(dict(summary["class_hist"]), {"LTR": 1, "RC": 1})
+
+    def test_conflicting_class_for_identical_sequence_is_resolved_and_recorded(self):
+        # Deterministic rule: both classes carry a subclass, so the first record
+        # in input order wins.  The conflict is recorded, never silently dropped.
+        summary, headers = self._run([("C1", "Gypsy", "X", "aaaa"),
+                                      ("C1", "Helitron", "X", "aaaa")])
+        self.assertEqual(headers, [">C1#LTR/Gypsy @X"])
+        self.assertEqual(len(summary["class_conflicts"]), 1)
+        self.assertEqual(summary["class_conflicts"][0][2], "LTR/Gypsy")
+        self.assertTrue(os.path.exists(os.path.join(self.tmp, "class_conflicts.tsv")))
+
+    def test_unknown_loses_to_a_concrete_classification(self):
+        summary, headers = self._run([("C2", "NoSuchKeyword", "X", "aaaa"),
+                                      ("C2", "Gypsy", "X", "aaaa")])
+        self.assertEqual(headers, [">C2#LTR/Gypsy @X"])
+        self.assertEqual(summary["class_conflicts"][0][2], "LTR/Gypsy")
+
+    def test_bare_class_loses_to_a_subclass(self):
+        summary, headers = self._run([("C3", "DNA transposon", "X", "aaaa"),
+                                      ("C3", "Mariner/Tc1", "X", "aaaa")])
+        self.assertEqual(headers, [">C3#DNA/TcMar @X"])
+        self.assertEqual(summary["class_conflicts"][0][2], "DNA/TcMar")
+
+
+class TestCrossValidate(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        import importlib.util
+        path = os.path.join(REPO_ROOT, "scripts", "cross_validate.py")
+        spec = importlib.util.spec_from_file_location("cross_validate", path)
+        cls.cv = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.cv)
+
+    def test_no_shared_names_returns_error(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        a, b = os.path.join(d, "a.lib"), os.path.join(d, "b.lib")
+        with open(a, "w") as f:
+            f.write(">X1#LTR/Gypsy @A\nacgt\n")
+        with open(b, "w") as f:
+            f.write(">Y1#LTR/Gypsy @A\nacgt\n")
+        self.assertNotEqual(self.cv.main(["--old-lib", a, "--new-lib", b]), 0)
 
 
 if __name__ == "__main__":

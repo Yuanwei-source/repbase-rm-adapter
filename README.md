@@ -15,8 +15,10 @@ and traceable conversion reports.
 ## Overview
 
 Recent RepBase releases provide repetitive-element sequences and annotations in
-EMBL format. These records must be converted into RepeatMasker-compatible FASTA
-headers before they can be used with the `-lib` option.
+EMBL format. RepeatMasker can align against a custom FASTA library directly via
+`-lib`, but its per-class annotation and summary output depend on the
+`>id#class/subclass` FASTA header convention; a raw RepBase FASTA therefore
+produces hits that RepeatMasker cannot classify or summarise correctly.
 
 This utility provides:
 
@@ -64,13 +66,24 @@ python repbase_to_rm.py \
     --input-dir /path/to/RepBase31.09.embl \
     --mapping   mappings/repbase-to-repeatmasker.toml \
     --output    output/repbase_31.09.rm.fa \
-    --out-dir   output/reports
+    --out-dir   output/reports \
+    --allow-length-mismatch
 ```
 
+`--allow-length-mismatch` is required for the RepBase 31.09 release: five records
+in `humsub.ref` (`AluY`, `AluYa5`, `AluYa8`, `AluYb8`, `AluYb9`) declare an `SQ`
+base-pair count that disagrees with the length of their sequence lines. Without
+the flag the converter aborts on such a record instead of silently writing a
+truncated or padded sequence; with it, every mismatch is listed individually in
+the summary. The flag exists to accommodate known anomalies in a specific source
+release; it is **not** a recommended default. For any other RepBase version, run
+without it first and inspect each reported mismatch before deciding to accept it.
+
 Audit reports (`id_mapping.tsv`, `unmapped_records.tsv`,
-`base_normalization.tsv`, `duplicate_report.tsv`) are written next to the output
-library, or to `--out-dir` when given. Run `python repbase_to_rm.py --help` for
-all options.
+`base_normalization.tsv`, `duplicate_report.tsv`; plus `class_conflicts.tsv` when
+records sharing an identical sequence carry different classifications) are
+written next to the output library, or to `--out-dir` when given. Run
+`python repbase_to_rm.py --help` for all options.
 
 ### 3. Validate the FASTA library
 
@@ -121,6 +134,13 @@ python tests/test_conversion.py
 without a recognized classification remain `Unknown`; they are not assigned a
 category by guessing.
 
+**Classification conflicts.** When one identifier covers several records whose
+sequences are identical after normalization but whose keyword fields map to
+different classes, the converter resolves the conflict deterministically — a
+concrete class beats `Unknown`, a class with a subclass beats a bare top-level
+class, and otherwise the first record in input order wins — and records every
+decision in `class_conflicts.tsv`. Conflicts are never resolved silently.
+
 **Duplicate identifiers.** Identical normalized sequences sharing an identifier
 are consolidated. Distinct sequences sharing an identifier receive unique
 suffixes (`_dup2`, `_dup3`, …). Duplicate comparisons are performed after
@@ -145,9 +165,9 @@ The adapter was evaluated using RepBase 31.09 and RepeatMasker 4.2.4 on
 | --- | --- |
 | Input EMBL records | 126,885 |
 | Output FASTA records | 124,930 |
-| Classified records | 124,067 |
-| Unclassified records | 863 (0.69%) |
-| Classification coverage | 99.31% |
+| Classified records | 124,083 |
+| Unclassified records | 847 (0.68%) |
+| Classification coverage | 99.32% |
 | Top-level class agreement with the 2018 RepeatMasker Edition (shared names) | 98.10% |
 | `makeblastdb -parse_seqids` | Passed |
 | RepeatMasker functional test | Passed |
@@ -178,49 +198,57 @@ Full validation details, including the real-genome comparison, are provided in
 - The converted library includes non-TE repeat categories (satellites,
   structural RNA); users should select appropriate categories for downstream
   applications.
-- 863 output records (0.69%) remain `Unknown` because their `KW` field carries no
+- 847 output records (0.68%) remain `Unknown` because their `KW` field carries no
   mapped superfamily; they are retained, not discarded.
 
 ## Data availability and licensing
 
-RepBase is maintained by the Genetic Information Research Institute (GIRI) and
-is subject to its data-use and redistribution terms. GIRI's academic-user terms
-restrict redistribution of the database, its components and derived materials.
+RepBase is maintained by the Genetic Information Research Institute (GIRI).
+RepBase has historically been distributed under a restrictive data-use agreement,
+in which the academic-user agreement restricts redistribution of the database and
+of materials derived from it outside the research group.
 
-> **2026 update — RepBase moving to CC0.** In June 2026, GIRI announced that
-> RepBase will be released under a **CC0 public-domain license** as part of an
-> effort to unify RepBase and Dfam into a single open framework (Storer et al.,
-> *Mobile DNA* 17:17, 2026; DOI
-> [10.1186/s13100-026-00409-9](https://doi.org/10.1186/s13100-026-00409-9)).
-> This is a **multi-release transition**: the announcement does not mean that
-> Dfam 4.0 already incorporates RepBase 31.09 in full, nor that every current
-> RepBase release is redistributable today. Until the transition covers the
-> specific release and date you use, obtain RepBase from GIRI under the terms
-> that apply to it. This repository continues to distribute no RepBase data.
+2026 open-licence development. In June 2026, GIRI and the Dfam team announced
+that RepBase is being integrated into a unified open database framework, and
+decided to release the complete RepBase dataset under CC0 (Creative Commons
+Zero) (Kojima et al., 2026, Mobile DNA, 17:17;
+[DOI: 10.1186/s13100-026-00409-9](https://doi.org/10.1186/s13100-026-00409-9)).
 
-This repository contains conversion software and documentation, but does **not**
-distribute RepBase source records, converted consensus sequences, or
-sequence-derived test data. Users must obtain RepBase independently under the
-applicable license.
+The integration will be carried out in stages. The announcement of the CC0 plan
+should not be equated with every historical or current RepBase release having
+already completed its licence change. When using or redistributing the data of a
+particular version, the licence terms explicitly provided by the corresponding
+data provider for that version shall govern.
 
-The classification mapping is derived from the Terrier project
-(Apache-2.0). See [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
+This repository does not distribute RepBase data, including the raw EMBL
+records, the converted consensus sequences, and test data derived from RepBase
+sequences. Users can obtain the required version from the
+[official GIRI download page](https://www.girinst.org/server/RepBase/) and must
+comply with the corresponding licence terms.
 
-Original code in this repository is released under the MIT License; see
-[`LICENSE`](LICENSE). That license does not extend to RepBase data.
+The classification mapping is adapted from the Terrier project (Apache-2.0); the
+relevant sources and licences are given in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+The original code in this repository is released under the MIT License; see
+[LICENSE](LICENSE). That licence applies only to this project's original code
+and does not alter the respective licence conditions of RepBase data or
+third-party materials.
 
 ## References and acknowledgments
 
 - **RepBase:** Genetic Information Research Institute — <https://www.girinst.org/>
+  (downloads: <https://www.girinst.org/server/RepBase/>)
 - **RepeatMasker:** <https://www.repeatmasker.org/>
 - **Terrier:** <https://github.com/rbturnbull/terrier>
 - **Terrier publication:** Turnbull et al. (2025). *Terrier: a deep learning
   repeat classifier*. Briefings in Bioinformatics, 26(4), bbaf442.
   <https://doi.org/10.1093/bib/bbaf442>
-- **RepBase–Dfam unification (2026):** Storer, J. M., Hubley, R. M., Rosen, J.
-  B., Wheeler, T. J., & Smit, A. F. A. *Unifying Repbase and Dfam: a new open
-  foundation for transposable element research*. Mobile DNA, 17, 17.
-  <https://doi.org/10.1186/s13100-026-00409-9> (PMID 42343465). GIRI statement:
+- **RepBase–Dfam unification (2026):** Kojima, K. K., Smit, A. F. A., Bao, W.,
+  Kohany, O., Kojima, N. F., Jurka, T., Hubley, R., & Wheeler, T. J. *Unifying
+  Repbase and Dfam: a new open foundation for transposable element research*.
+  Mobile DNA, 17, Article 17 (2026). <https://doi.org/10.1186/s13100-026-00409-9>
+  (PMID 42343465). GIRI statement:
   <http://www.girinst.org/repbase/repbase_and_dfam.html>
 
 ## Project status
@@ -230,8 +258,10 @@ testing with RepBase 31.09. It is distributed as an independently developed,
 reproducible conversion utility. Downstream genome-annotation performance should
 be assessed separately for each application.
 
-**Release v1.0.0 — validated conversion and functional compatibility with
-RepBase 31.09 and RepeatMasker 4.2.4.** "Validated" here means validated by this
-project's own tests (conversion integrity, RepeatMasker compatibility, and a
-real-genome behavioural comparison); it does **not** mean GIRI certification or a
-genome-wide annotation-accuracy guarantee.
+**Release v1.1.0 — data-integrity and classification improvements, validated on
+the full RepBase 31.09 library; the validated conversion and functional
+compatibility with RepeatMasker 4.2.4 established in v1.0.0 are unchanged.**
+"Validated" here means validated by this project's own tests (conversion
+integrity, RepeatMasker compatibility, and a real-genome behavioural
+comparison); it does **not** mean GIRI certification or a genome-wide
+annotation-accuracy guarantee.

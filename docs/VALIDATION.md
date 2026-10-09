@@ -56,8 +56,15 @@ python repbase_to_rm.py \
     --input-dir /path/to/RepBase31.09.embl \
     --mapping   mappings/repbase-to-repeatmasker.toml \
     --output    repbase_31.09.rm.fa \
-    --out-dir   reports
+    --out-dir   reports \
+    --allow-length-mismatch
 ```
+
+`--allow-length-mismatch` is required for RepBase 31.09: five records in
+`humsub.ref` (`AluY`, `AluYa5`, `AluYa8`, `AluYb8`, `AluYb9`) declare an `SQ`
+base-pair count that disagrees with the length of their sequence lines. Without
+the flag the converter aborts on such a record instead of silently writing a
+truncated or padded sequence.
 
 ### 2.1 Record accounting
 
@@ -89,14 +96,14 @@ library, so the table sums exactly to the record total.
 | Top-level class | Records |
 | --- | --- |
 | LTR | 75,260 |
-| DNA | 27,739 |
-| LINE | 13,511 |
-| SINE | 2,915 |
+| DNA | 27,740 |
+| LINE | 13,512 |
+| SINE | 2,930 |
 | RC | 2,198 |
 | PLE | 1,534 |
-| Unknown | 863 |
+| Unknown | 847 |
 | Satellite | 759 |
-| Structural_RNA | 140 |
+| Structural_RNA | 139 |
 | Other | 11 |
 | **Total** | **124,930** |
 
@@ -104,33 +111,41 @@ library, so the table sums exactly to the record total.
 
 | Metric | Value |
 | --- | --- |
-| Classified records | 124,067 |
-| Unclassified records | 863 |
-| Coverage (records) | **99.31%** |
-| Distinct original entries that are unclassified | 838 |
+| Classified records | 124,083 |
+| Unclassified records | 847 |
+| Coverage (records) | **99.32%** |
+| Distinct original entries that are unclassified | 823 |
 
-The 863 unclassified **records** correspond to 838 distinct unclassified
-**entries**: 25 of those entries have more than one distinct sequence and are
-therefore represented by a renamed `_dupN` record that carries the same
-`Unknown` class. Both figures are reported for transparency; the record-level
-figure (99.31%) is the one consistent with the 124,930-record output.
+The 847 unclassified **records** correspond to 823 distinct unclassified
+**entries**: a few of those entries are represented by more than one distinct
+sequence and therefore also by a renamed `_dupN` record carrying the same
+`Unknown` class, which accounts for the remaining 24 records. Both figures are
+reported for transparency; the record-level figure (99.32%) is the one
+consistent with the 124,930-record output.
 
 ### 2.4 Composition of the `Unknown` records
 
-Of the 838 distinct unclassified entries:
+Of the 823 distinct unclassified entries:
 
-- **Generic descriptors, family undeterminable** ≈ 445 entries
-  (`Transposable Element` 230, `Repetitive element` 72, `Nonautonomous` 52,
-  `Repetitive sequence` 50, `Multicopy gene` 26, plus `conserved` / `Repeat region`
-  etc.) — honestly marked `Unknown`, never force-guessed.
-- **Empty `KW` field** — 93 entries (no classification information at all).
-- **Recoverable but unmapped** ≈ 300 entries (`SINE element` 20; structural-RNA
-  variants such as `Transfer RNA` / `Small nuclear RNA`; LTR families such as
-  `Loki-*-LTR` / `CoeEFV-LTR`; `FLA` / `MITE`). A recorded synonym supplement
-  could recover these (raising coverage to ≈99.6%), but per scope they are kept
-  as `Unknown` rather than silently mapped.
+- **Empty `KW` field** — 93 entries (117 output records): no classification
+  information at all.
+- **Generic descriptors, family undeterminable** — 548 entries whose `KW`
+  contains one of the generic phrases `Transposable Element` (231 entries),
+  `Nonautonomous` (254), `Repetitive sequence` (121), `conserved` (117),
+  `Repetitive element` (106), `Multicopy gene` (26), `Repeat region` (11). These
+  counts are entries containing the phrase and overlap freely; the 548 figure is
+  the number of distinct entries matching at least one of them. Such entries are
+  honestly marked `Unknown`, never force-guessed.
+- **Named but unmapped** — the remaining 182 entries, whose `KW` names an element
+  or family that the Terrier mapping does not cover (`SINE element`; structural
+  RNA variants such as `Transfer RNA` / `Small nuclear RNA`; LTR families such
+  as `Loki-*-LTR` / `CoeEFV-LTR`; `MITE`; `FLA`; `Telomeric repeat`; and entries
+  whose `KW` is only an element name such as `IKIRARA1` or `MINIME_DN`). A
+  recorded synonym supplement could recover part of these (raising coverage
+  towards ≈99.6%), but per scope they are kept as `Unknown` rather than silently
+  mapped.
 
-The full list is in `unmapped_records.tsv` (838 distinct IDs).
+The full list is in `unmapped_records.tsv` (823 distinct IDs, 847 records).
 
 ### 2.5 Base normalization (recorded, not blanket-replaced)
 
@@ -149,23 +164,118 @@ Every event is logged in `base_normalization.tsv`.
 166 records contained characters illegal in RepeatMasker FASTA identifiers
 (`:`, `(`, `)`, `@`); these are replaced with `_` (e.g. `A@1` → `A_1`,
 `tRNA-Leu-TTA(m)` → `tRNA-Leu-TTA_m_`). After sanitization, the output contains
-**zero duplicate identifiers**.
+**zero duplicate identifiers**; a collision is a hard error, so the converter
+stops instead of writing duplicate FASTA identifiers.
 
-### 2.7 Reproducibility check
+### 2.7 Input validation and classification-conflict resolution
 
-The delivered CLI was re-run end-to-end on the full RepBase 31.09 input and
-compared against the reference library produced during development:
+The converter validates its input before writing anything, and resolves the
+ambiguity present in the real release by fixed rules rather than by read order.
+
+**Hard checks — a failure aborts the run and no library is written:**
+
+| Check | RepBase 31.09 |
+| --- | --- |
+| Record has an `SQ` line | 0 missing |
+| Sequence is non-empty | 0 empty |
+| Declared `SQ` length matches the sequence lines | 5 disagreements (below) |
+| Sequence contains only IUPAC characters | 0 illegal characters |
+| No duplicate identifier after sanitization | 0 collisions |
+
+The five declared-length disagreements are properties of the released data, not
+of the parser: the `SQ` line and the sequence lines disagree with each other
+(`humsub.ref`: `AluY` 281/282, `AluYa5` 281/282, `AluYa8` 280/281, `AluYb8`
+288/289, `AluYb9` 282/289). Because aborting would make the real release
+unconvertible, `--allow-length-mismatch` accepts them explicitly and prints every
+accepted anomaly in the run summary; without the flag the run stops rather than
+silently writing a truncated or padded sequence. A missing or empty sequence, an
+illegal base, and an identifier collision are always hard errors: the converter
+stops instead of writing a plausible-but-wrong library.
+
+**Classification conflicts.** When one identifier covers several records whose
+normalized sequences are identical but whose `KW` fields map to different
+classes, the class is resolved deterministically: a concrete class beats
+`Unknown`, a class with a subclass beats a bare top-level class, and otherwise
+the first record in input order wins. All 62 conflicts in RepBase 31.09 are
+written to `class_conflicts.tsv` with their candidate classes and source files;
+none is resolved silently. When one identifier covers records with *different*
+sequences, each sequence is classified from the `KW` of its own record instead
+of inheriting another record's class, and `id_mapping.tsv` records which
+sequence group each output record came from (`seqgroup_N`).
+
+**Interpretation limit.** Where one normalized sequence has several candidate
+classes, the program resolves the conflict with a deterministic heuristic. That
+rule makes the result reproducible; it is **not** an independent biological
+verification of classification correctness. Every conflict is recorded in
+`class_conflicts.tsv` for further review by the user.
+
+**How far the conflicts reach.** Of the 62 conflicts, **35** are between
+candidates in the same top-level class (e.g. `SINE` vs `SINE/tRNA`, `DNA` vs
+`DNA/MULE`); **27** span different top-level labels, but **26** of those pair a
+concrete class with `Unknown` rather than disagreeing about biology. Only one
+record, `TS2`, is a genuine disagreement between two distinct concrete top-level
+classes (`SINE` in `dcotrep.ref` vs `LINE/RTE` in `edcotrep.ref`, the latter last
+updated in 2021); no other conflict pits two different concrete top-level
+classes against each other. The 62 conflicts are 0.05% of the 124,930 output
+records.
+
+### 2.8 Reproducibility and reconciliation with the previously released library
+
+**Run-to-run determinism.** The delivered CLI was run twice end-to-end on the
+full RepBase 31.09 input. Both runs produced
+
+```
+257cc6c118e32f1644974d7cef4ae20456dddde9ea3354f30132626d63c73299
+```
+
+and `cmp` reported the library and all five report files byte-identical, so the
+conversion is deterministic.
+
+**Difference from the library shipped with the first release.** That library
+(`72f41f7532a744b82902b11e898c309562fa14c25fdb6ee52d333da3a17611ad`) was
+produced before the input-validation and classification fixes documented above.
+The two libraries agree on every sequence:
 
 | Check | Result |
 | --- | --- |
-| `repbase_31.09.rm.fa` SHA-256 | identical (`72f41f7532a744b82902b11e898c309562fa14c25fdb6ee52d333da3a17611ad`) |
-| Byte comparison (`cmp`) | byte-identical |
-| Record count / header set / per-record sequence | 124,930 = 124,930; identical; 0 differences |
-| `id_mapping.tsv`, `unmapped_records.tsv`, `base_normalization.tsv`, `duplicate_report.tsv` | each byte-identical |
+| Record count | 124,930 = 124,930 |
+| Headers present in both | 124,872 |
+| — of those, records whose sequence differs | **0** |
+| Headers present in only one | 58 (class label only) |
 
-Runtime: 108 s wall (~100% CPU, ~900 MB peak RSS) for the full 126,885-record
-input. This demonstrates that the released CLI reproduces the reference output
-exactly, i.e. the conversion algorithm and classification rules are unchanged.
+All 58 differences are class labels, and all follow from the two rules in §2.7:
+
+| Cause | Records |
+| --- | --- |
+| Identical-sequence class conflict resolved by the §2.7 rule (the earlier library used the class of the first record read) | 47 |
+| Sequence classified from its own record's `KW` instead of inheriting another record's class | 11 |
+| **Records whose sequence changed** | **0** |
+
+The complete list, grouped by change:
+
+| Change | n | Identifiers |
+| --- | --- | --- |
+| `SINE` → `SINE/tRNA` | 24 | `BoSB10A`, `BoSB11`, `BoSB12`, `BoSB13`, `BoSB14A`, `BoSB14B`, `BoSB15`, `BoSB1A`, `BoSB2`, `BoSB3`, `BoSB5A`, `BoSB5B`, `BoSB5C`, `BoSB5D`, `BoSB6A`, `BoSB6B`, `BoSB6C`, `BoSB6D`, `BoSB7A`, `BoSB8A`, `BoSB8B`, `BoSB9A`, `BoSB9B`, `SINE1_MT` |
+| `Unknown` → `SINE/tRNA` | 14 | `B2_Mm1a`, `B2_Mm1t`, `B2_Mm2`, `B2_Rat1`, `B2_Rat2`, `B2_Rat3`, `B2_Rat4`, `B2_Rn`, `B2_Rn1`, `B2_Rn2`, `B2_RnY`, `BC1_Mm`, `ID_Rn1_dup2`, `ID_Rn2` |
+| `DNA` → `DNA/TcMar` | 4 | `PIGMET_dup2`, `SONATA1_dup2`, `SONATA2_dup2`, `SONATA3` |
+| `SINE/7SL` → `SINE` | 3 | `AluMacYa3_dup2`, `AluMacYb2_dup2`, `AluMacYb4_dup2` |
+| `Unknown` → `SINE/7SL` | 3 | `B1_Mm`, `B1_Mus1`, `B1_Rn` |
+| `LTR` → `LTR/Gypsy` | 2 | `GmGYPSY11_I`, `RAM4_I` |
+| `DNA` → `DNA/MULE` | 2 | `HT1_MT`, `SHELI_MT` |
+| `LTR/Copia` → `LTR/Gypsy` | 2 | `RAM13_I_MT_dup2`, `RAM13_LTR_MT_dup2` |
+| `Unknown` → `DNA/hAT` | 1 | `TE-7-1_VV` |
+| `SINE` → `LINE/RTE` | 1 | `TS2` |
+| `SINE/tRNA` → `Unknown` | 1 | `BC1_Cp_dup2` |
+| `Structural_RNA` → `Unknown` | 1 | `UHG_dup2` |
+
+Net effect on the record-level distribution: `Unknown` 863 → 847 (−16),
+`SINE` 2,915 → 2,930, `DNA` 27,739 → 27,740, `LINE` 13,511 → 13,512,
+`Structural_RNA` 140 → 139; every other class is unchanged. In each case the
+outcome follows the rules in §2.7 — no rule was tuned to force a hash match, and
+the two libraries differ only in these 58 headers.
+
+Runtime: 104 s wall (~100% CPU, ≈880 MB peak RSS) for the full 126,885-record
+input.
 
 ---
 
@@ -236,7 +346,7 @@ Normalization applied for the comparison (identical to the converter): uppercase
 | Records | 126,885 | 124,930 |
 | Distinct normalized sequences | 124,924 | **124,924** |
 | Present here but not in official | — | **0** |
-| Present in official but not here | 1,955 records (each matching a distinct sequence already present) | — |
+| Present in official but not here | 1,955 duplicate record instances (each already represented here by an identical sequence) | — |
 
 **Conclusion:** after sequence normalization, the converted library and the
 official FASTA contain exactly the same set of distinct sequences
@@ -245,7 +355,8 @@ consolidates 1,955 redundant records under the stated de-duplication rules and
 loses no unique sequence; no retained sequence was altered (a real substitution,
 deletion or insertion would have broken the hash match). The 1,955 official-only
 records are exactly the "same ID + identical sequence" duplicates dropped by
-rule (matching §2.1).
+rule (matching §2.1); in other words 1,955 is a difference in **record
+instances**, not in distinct sequences.
 
 The 124,930 output records correspond to 124,924 distinct sequences: 6 records
 share a sequence with another record under a different identifier:
@@ -317,12 +428,17 @@ comparing three libraries under identical conditions. It addresses three
 questions: (1) how much additional annotation RepBase 31.09 provides over the
 2018 edition, in total coverage and in newly covered (non-overlapping) bases;
 (2) whether that added coverage falls in classified TE categories rather than in
-low-complexity or `Unknown`; and (3) the runtime and memory cost of the larger
-library.
+low-complexity or `Unknown`; and (3) the runtime cost of the larger library.
 
 **Setup:** NTN beetle genome (409.8 Mb, 8 chromosomes), chr2 first 10 Mb (0% N);
 same machine and environment (RepeatMasker 4.2.4 / RMBlast 2.17.1); identical
 parameters `-xsmall -gff -pa 32`; only the library changes.
+
+The two RepBase runs supply a custom library explicitly via `-lib`, whereas the
+Dfam 4.0 run uses RepeatMasker's managed library selection (`-species "Insecta"`).
+The comparison therefore characterises the effect of each **workflow** (custom
+library vs. installed species library) rather than the isolated effect of
+library size.
 
 | Run | Library | Library size | Time (10 Mb) |
 | --- | --- | --- | --- |
@@ -346,6 +462,12 @@ parameters `-xsmall -gff -pa 32`; only the library changes.
 | Small RNA | 2.78% | 2.80% | +0.02pp | 2.72% |
 | Simple repeats | 0.88% | 0.86% | −0.02pp | 0.88% |
 | Low complexity | 0.10% | 0.10% | 0.00pp | 0.10% |
+
+Run B was repeated with the fixed 31.09 library (the one reconciled in §2.8,
+`257cc6c1…`). The resulting `.tbl` is byte-identical to the one above (SHA-256
+`2d5907aa292600fdb9de9477e1aa6da2b24a4ce8f38931a3820efdc8201bbd28`; run time
+261 s vs 252 s on the same machine). None of the 58 class-label changes
+documented in §2.8 therefore affects any per-category percentage reported here.
 
 Base-level overlap (31.09 vs 2018): `2018-only = 0.04%`, `31.09-only = 3.46%`,
 three-way core = 1,071,066 bp.
@@ -390,8 +512,9 @@ but it does not by itself establish genome-wide annotation accuracy.
   RepeatMasker Edition. It is not registered as "validated" anywhere.
 - Classification is a **keyword mapping**, not sequence-based prediction.
   Records whose `KW` carries no mapped superfamily stay `Unknown`.
-- **863 output records (0.69%) remain `Unknown`**; ≈300 more could be recovered
-  with a recorded synonym supplement, but this was deliberately not applied.
+- **847 output records (0.68%) remain `Unknown`**; ≈180 further entries name a
+  family that the mapping does not cover and could be recovered with a recorded
+  synonym supplement, but this was deliberately not applied.
 - **Subclass granularity is coarser** than the 2018 edition for Tc1/Mariner,
   ERV1/ERVK, hAT-Ac etc. Only the superfamily level is guaranteed.
 - The library is **not restricted to any taxon**; it contains records from all

@@ -10,7 +10,7 @@
 
 ## 概述
 
-近期的 RepBase 发行版以 EMBL 格式提供重复序列及其注释。这些记录必须先转换为 RepeatMasker 兼容的 FASTA 头部格式，才能通过 `-lib` 选项使用。
+近期的 RepBase 发行版以 EMBL 格式提供重复序列及其注释。RepeatMasker 可以直接用 `-lib` 指定自定义 FASTA 库进行比对，但其按类注释与汇总输出依赖 `>id#class/subclass` 的 FASTA 头部约定；未转换的 RepBase FASTA 因此会产生无法正确归类与汇总的命中。
 
 本工具提供：
 
@@ -48,10 +48,13 @@ python repbase_to_rm.py \
     --input-dir /path/to/RepBase31.09.embl \
     --mapping   mappings/repbase-to-repeatmasker.toml \
     --output    output/repbase_31.09.rm.fa \
-    --out-dir   output/reports
+    --out-dir   output/reports \
+    --allow-length-mismatch
 ```
 
-审计报告（`id_mapping.tsv`、`unmapped_records.tsv`、`base_normalization.tsv`、`duplicate_report.tsv`）会写到输出库旁边，或在使用 `--out-dir` 时写入该目录。全部选项见 `python repbase_to_rm.py --help`。
+RepBase 31.09 需要 `--allow-length-mismatch`：`humsub.ref` 中有 5 条记录（`AluY`、`AluYa5`、`AluYa8`、`AluYb8`、`AluYb9`）的 `SQ` 声明碱基数与其序列行长度不一致。不加该标志时转换会直接报错中止，而不会静默写出被截短或补齐的序列；加上后每条不一致都会在运行摘要中逐条列出。该选项用于兼容特定发行版中已知的源数据异常，**不是**推荐的默认设置；对其它 RepBase 版本，请先不加该标志运行，并在确认每一处不一致后再决定是否接受。
+
+审计报告（`id_mapping.tsv`、`unmapped_records.tsv`、`base_normalization.tsv`、`duplicate_report.tsv`；当同一序列的不同记录分类冲突时另生成 `class_conflicts.tsv`）会写到输出库旁边，或在使用 `--out-dir` 时写入该目录。全部选项见 `python repbase_to_rm.py --help`。
 
 ### 3. 校验 FASTA 库
 
@@ -94,6 +97,8 @@ python tests/test_conversion.py
 
 **分类。** 取每条记录 `KW` 字段中第一个大小写不敏感匹配的关键词，映射到 RepeatMasker 分类体系。没有识别到分类的条目保留为 `Unknown`，不做猜测。
 
+**分类冲突。** 当同一标识符下多条记录在规范化后序列相同、但 `KW` 映射到不同类别时，转换器按固定规则裁决 —— 具体类别优先于 `Unknown`，带亚类的类别优先于纯顶层类别，其余情况以输入顺序中第一条记录为准 —— 并把每次裁决记录到 `class_conflicts.tsv`。冲突不会被静默处理。
+
 **重复标识符。** 共享同一标识符且规范化后序列相同的记录会被合并；共享同一标识符但序列不同的记录会获得唯一后缀（`_dup2`、`_dup3`……）。重复比较在序列规范化之后进行。
 
 **序列规范化。** 非 IUPAC 的 `X` 与 `O` 转换为 `N`，`U` 转换为 `T`；合法的 IUPAC 简并字符原样保留。
@@ -110,9 +115,9 @@ python tests/test_conversion.py
 | --- | --- |
 | 输入 EMBL 记录 | 126,885 |
 | 输出 FASTA 记录 | 124,930 |
-| 已分类记录 | 124,067 |
-| 未分类记录 | 863（0.69%） |
-| 分类覆盖率 | 99.31% |
+| 已分类记录 | 124,083 |
+| 未分类记录 | 847（0.68%） |
+| 分类覆盖率 | 99.32% |
 | 与 2018 RepeatMasker Edition 的顶层类一致率（共有名称） | 98.10% |
 | `makeblastdb -parse_seqids` | 通过 |
 | RepeatMasker 功能测试 | 通过 |
@@ -132,30 +137,32 @@ python tests/test_conversion.py
 - 2018 RepeatMasker Edition 中的部分亚类区分在本库中被归到更粗的超家族层级（如 `DNA/TcMar-Tc1` → `DNA/TcMar`）。
 - 完整转换库不会自动限制到特定分类群。
 - 转换库包含非 TE 的重复类别（卫星、结构 RNA）；下游应用应自行选取合适的类别。
-- 有 863 条输出记录（0.69%）因 `KW` 中无可映射的超家族而保持 `Unknown`；它们被保留而非丢弃。
+- 有 847 条输出记录（0.68%）因 `KW` 中无可映射的超家族而保持 `Unknown`；它们被保留而非丢弃。
 
 ## 数据可用性与许可
 
-RepBase 由遗传信息研究所（GIRI）维护，受其数据使用与再分发条款约束。GIRI 的学术用户条款限制对数据库、其组成部分及衍生材料的再分发。
+RepBase 由遗传信息研究所（Genetic Information Research Institute, GIRI）维护。RepBase 历史上采用限制性数据使用协议，其中学术用户协议限制数据库及其衍生材料向研究组外再分发。
 
-> **2026 年更新 —— RepBase 将转为 CC0。** 2026 年 6 月，GIRI 宣布 RepBase 将以 **CC0 公有领域许可**发布，作为将 RepBase 与 Dfam 统一为单一开放框架的努力的一部分（Storer 等，*Mobile DNA* 17:17，2026；DOI [10.1186/s13100-026-00409-9](https://doi.org/10.1186/s13100-026-00409-9)）。这是一项**分多次发行推进的过渡**：该公告不意味着当前 Dfam 4.0 已完整收录 RepBase 31.09，也不意味着现有的各个 RepBase 发行版今天即可再分发。在过渡覆盖你所使用的具体发行版与日期之前，请仍按适用于该版本的条款从 GIRI 获取 RepBase。本仓库依然不分发任何 RepBase 数据。
+2026 年开放许可进展。 2026 年 6 月，GIRI 与 Dfam 团队宣布将 RepBase 整合至统一的开放数据库框架，并决定以 CC0（Creative Commons Zero） 方式开放完整 RepBase 数据集（Kojima et al., 2026, Mobile DNA, 17:17；[DOI: 10.1186/s13100-026-00409-9](https://doi.org/10.1186/s13100-026-00409-9)）。
 
-本仓库包含转换软件与文档，但**不**分发 RepBase 源记录、转换后的共识序列或源自序列的测试数据。用户须自行在适用许可下获取 RepBase。
+该整合将分阶段实施。CC0 开放计划的公告不应直接等同于每个历史或现有 RepBase 发行版均已完成许可变更。 使用或再分发特定版本的数据时，应以相应数据发布方明确提供的许可条款为准。
 
-分类映射改编自 Terrier 项目（Apache-2.0）。见 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)。
+本仓库不分发 RepBase 数据，包括原始 EMBL 记录、转换后的共识序列及源自 RepBase 序列的测试数据。用户可通过 [GIRI 官方下载页面](https://www.girinst.org/server/RepBase/) 获取所需版本，并遵守相应许可条件。
 
-本仓库的原创代码以 MIT 许可发布，见 [`LICENSE`](LICENSE)。该许可不延伸到 RepBase 数据。
+分类映射改编自 Terrier 项目（Apache-2.0），相关来源与许可见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+
+本仓库的原创代码采用 MIT 许可证，见 [LICENSE](LICENSE)。该许可证仅适用于本项目原创代码，不改变 RepBase 数据或第三方材料各自的许可条件。
 
 ## 参考文献与致谢
 
-- **RepBase：** Genetic Information Research Institute — <https://www.girinst.org/>
+- **RepBase：** Genetic Information Research Institute — <https://www.girinst.org/>（下载页：<https://www.girinst.org/server/RepBase/>）
 - **RepeatMasker：** <https://www.repeatmasker.org/>
 - **Terrier：** <https://github.com/rbturnbull/terrier>
 - **Terrier 论文：** Turnbull et al. (2025). *Terrier: a deep learning repeat classifier*. Briefings in Bioinformatics, 26(4), bbaf442. <https://doi.org/10.1093/bib/bbaf442>
-- **RepBase–Dfam 统一（2026）：** Storer, J. M., Hubley, R. M., Rosen, J. B., Wheeler, T. J., & Smit, A. F. A. *Unifying Repbase and Dfam: a new open foundation for transposable element research*. Mobile DNA, 17, 17. <https://doi.org/10.1186/s13100-026-00409-9>（PMID 42343465）。GIRI 声明：<http://www.girinst.org/repbase/repbase_and_dfam.html>
+- **RepBase–Dfam 统一（2026）：** Kojima, K. K., Smit, A. F. A., Bao, W., Kohany, O., Kojima, N. F., Jurka, T., Hubley, R., & Wheeler, T. J. *Unifying Repbase and Dfam: a new open foundation for transposable element research*. Mobile DNA, 17, Article 17 (2026). <https://doi.org/10.1186/s13100-026-00409-9>（PMID 42343465）。GIRI 声明：<http://www.girinst.org/repbase/repbase_and_dfam.html>
 
 ## 项目状态
 
 转换流程已通过 RepBase 31.09 的格式验证与 RepeatMasker 功能测试，作为独立开发、可复现的转换工具分发。下游基因组注释表现需按具体应用单独评估。
 
-**Release v1.0.0 —— 已完成 RepBase 31.09 与 RepeatMasker 4.2.4 的转换验证与功能兼容性验证。** 此处 “Validated” 指通过本项目自身的测试（转换完整性、RepeatMasker 兼容性、真实基因组行为比较），**不**代表 GIRI 官方认证，也不代表全基因组注释准确率保证。
+**Release v1.1.0 —— 数据完整性与分类处理改进，已在完整 RepBase 31.09 库上完成验证；v1.0.0 建立的 RepBase 31.09 与 RepeatMasker 4.2.4 转换验证与功能兼容性结论不变。** 此处 “Validated” 指通过本项目自身的测试（转换完整性、RepeatMasker 兼容性、真实基因组行为比较），**不**代表 GIRI 官方认证，也不代表全基因组注释准确率保证。

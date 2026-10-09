@@ -57,6 +57,10 @@ def main(argv: list[str] | None = None) -> int:
 
     shared = set(old) & set(new)
     print(f"shared names:      {len(shared)}")
+    if not shared:
+        print("ERROR: the two libraries share no sequence names; there is "
+              "nothing to cross-validate.", file=sys.stderr)
+        return 1
 
     agree_top = 0
     agree_full = 0
